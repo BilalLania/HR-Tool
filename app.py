@@ -37,9 +37,11 @@ if uploaded_file is not None:
         df['Original_DateTime'] = pd.to_datetime(df['Date/Time'])
         emp_name = df['Name'].iloc[0] if 'Name' in df.columns else "Employee"
         
-        ## 🌙 Robust Night Shift Window (12-Hour Morning Grouping rule)
+        ## 🌙 Strict 7 AM Shift Boundary Line Rule
+        # Any punch before 7:00 AM belongs to the previous night's shift. 
+        # Any punch at or after 7:00 AM is always a new check-in for the current day.
         def get_adjusted_work_date(dt):
-            if 0 <= dt.hour < 12:
+            if 0 <= dt.hour < 7:
                 return (dt - timedelta(days=1)).date()
             return dt.date()
             
@@ -76,9 +78,9 @@ if uploaded_file is not None:
             
             if punches == 0:
                 if day_type == "Weekend":
-                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0
+                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
                 else:
-                    return "❌ Absent / Unpaid Day", 0.0, 9 * 60 * 60, 0.0
+                    return "❌ Absent / Unpaid Day", 0.0, 9 * 60 * 60, 0.0, False
             
             check_in_dt = row['Check_In']
             check_out_dt = row['Check_Out']
@@ -91,15 +93,14 @@ if uploaded_file is not None:
             else:
                 time_status = "✅ On Time"
                 
-            if punches == 1:
+            # Single punch calculation handler -> Zero Payout Penalty as requested
+            if punches == 1 or check_in_dt == check_out_dt:
                 if day_type == "Weekend":
-                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0
-                return f"{time_status} | ❌ Missing Punch Out", 0.0, 9 * 60 * 60, 0.0
+                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
+                return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
             # --- 🕗 The 8 PM Overtime Rule Engine ---
-            eight_pm_cutoff = datetime.combine(check_in_dt.date() + timedelta(days=1) if check_in_dt.hour >= 12 and check_out_dt.hour < 12 else check_in_dt.date(), time(20, 0, 0))
-            if check_out_dt.hour < 12 and check_in_dt.hour >= 12:
-                eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
+            eight_pm_cutoff = datetime.combine(check_in_dt.date() + timedelta(days=1) if check_in_dt.hour >= 12 and check_out_dt.hour < 7 else check_in_dt.date(), time(20, 0, 0))
             
             overtime_secs = 0.0
             if check_out_dt > eight_pm_cutoff:
@@ -113,19 +114,20 @@ if uploaded_file is not None:
             shortage_secs = max(0.0, required_secs - standard_worked_secs)
             
             if day_type == "Weekend":
-                return "🎉 Weekend | 📋 Complete", (check_out_dt - check_in_dt).total_seconds(), 0.0, 0.0
+                return "🎉 Weekend | 📋 Complete", (check_out_dt - check_in_dt).total_seconds(), 0.0, 0.0, False
 
             final_status = f"{time_status} | 📋 Complete"
             if overtime_secs > 0:
                 final_status += " + 🚀 Post-8PM OT"
                 
-            return final_status, (check_out_dt - check_in_dt).total_seconds(), shortage_secs, overtime_secs
+            return final_status, (check_out_dt - check_in_dt).total_seconds(), shortage_secs, overtime_secs, False
 
         res = summary.apply(calculate_metrics, axis=1)
         summary['Combined_Status'] = [r[0] for r in res]
         summary['Seconds_Worked'] = [r[1] for r in res]
         summary['Shortage_Secs'] = [r[2] for r in res]
         summary['Overtime_Secs'] = [r[3] for r in res]
+        summary['Is_Missing_Out'] = [r[4] for r in res]
         
         summary['Deduction'] = summary['Shortage_Secs'] * per_second_rate
         summary['Overtime_Pay'] = summary['Overtime_Secs'] * (per_second_rate * 0.5)
@@ -138,13 +140,14 @@ if uploaded_file is not None:
         total_ot_mins = summary['Overtime_Secs'].sum() / 60
         net_deductions = summary['Deduction'].sum()
         net_ot_payout = summary['Overtime_Pay'].sum()
+        missing_out_count = int(summary['Is_Missing_Out'].sum())
         
         leave_credit_pkr = (approved_leaves + public_holidays) * (9 * 60 * 60 * per_second_rate)
         adjusted_deductions = max(0.0, net_deductions - leave_credit_pkr)
         
         c1.metric("Total Attendance Deficit", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
         c2.metric("Post-8PM Overtime (Half-Pay)", f"{total_ot_mins:.1f} mins", f"+₨ {net_ot_payout:,.2f}")
-        c3.metric("Late Day Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]))
+        c3.metric("Missing Log Incidents", f"{missing_out_count} Days", "₨ 0.00 Penalty (Grace)")
         c4.metric("Expected Tracked Hours", f"{total_expected_hours} Hrs")
         
         ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION
@@ -216,7 +219,6 @@ if uploaded_file is not None:
             workbook  = writer.book
             worksheet = writer.sheets['Payroll Summary']
             
-            # Formatting configurations
             currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'align': 'right'})
             red_currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'font_color': 'red', 'align': 'right'})
             bold_red_currency_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'font_color': 'red', 'align': 'right'})
@@ -229,7 +231,7 @@ if uploaded_file is not None:
             total_value_red_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'font_color': 'red', 'top': 1, 'align': 'right'})
             
             worksheet.set_column('A:F', 15)
-            worksheet.set_column('G:G', 22, red_currency_format) # Set the regular deductions column text to Red
+            worksheet.set_column('G:G', 22, red_currency_format)
             worksheet.set_column('H:H', 22, currency_format)
             worksheet.set_column('I:I', 35)
             
