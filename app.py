@@ -38,8 +38,6 @@ if uploaded_file is not None:
         emp_name = df['Name'].iloc[0] if 'Name' in df.columns else "Employee"
         
         ## 🌙 Strict 7 AM Shift Boundary Line Rule
-        # Any punch before 7:00 AM belongs to the previous night's shift. 
-        # Any punch at or after 7:00 AM is always a new check-in for the current day.
         def get_adjusted_work_date(dt):
             if 0 <= dt.hour < 7:
                 return (dt - timedelta(days=1)).date()
@@ -93,7 +91,6 @@ if uploaded_file is not None:
             else:
                 time_status = "✅ On Time"
                 
-            # Single punch calculation handler -> Zero Payout Penalty as requested
             if punches == 1 or check_in_dt == check_out_dt:
                 if day_type == "Weekend":
                     return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
@@ -145,10 +142,10 @@ if uploaded_file is not None:
         leave_credit_pkr = (approved_leaves + public_holidays) * (9 * 60 * 60 * per_second_rate)
         adjusted_deductions = max(0.0, net_deductions - leave_credit_pkr)
         
-        c1.metric("Total Attendance Deficit", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
+        c1.metric("Total Attendance Minutes", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
         c2.metric("Post-8PM Overtime (Half-Pay)", f"{total_ot_mins:.1f} mins", f"+₨ {net_ot_payout:,.2f}")
-        c3.metric("Missing Log Incidents", f"{missing_out_count} Days", "₨ 0.00 Penalty (Grace)")
-        c4.metric("Expected Tracked Hours", f"{total_expected_hours} Hrs")
+        c3.metric("Late Day Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]), "Arrival Alerts")
+        c4.metric("Missing Log Incidents", f"{missing_out_count} Days", "₨ 0.00 Penalty (Grace)")
         
         ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION
         st.write("---")
@@ -219,28 +216,41 @@ if uploaded_file is not None:
             workbook  = writer.book
             worksheet = writer.sheets['Payroll Summary']
             
+            # Formatting configurations
             currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'align': 'right'})
-            red_currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'font_color': 'red', 'align': 'right'})
-            bold_red_currency_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'font_color': 'red', 'align': 'right'})
+            
+            # Explicit Red Font + Red Highlight Soft Background
+            red_alert_format = workbook.add_format({
+                'num_format': '₨ #,##0.00',
+                'font_color': '#9C0006',
+                'bg_color': '#FFC7CE',
+                'align': 'right'
+            })
+            bold_red_alert_format = workbook.add_format({
+                'bold': True,
+                'num_format': '₨ #,##0.00',
+                'font_color': '#9C0006',
+                'bg_color': '#FFC7CE',
+                'align': 'right'
+            })
             
             bold_format = workbook.add_format({'bold': True})
             bold_currency_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'align': 'right'})
             
             total_label_format = workbook.add_format({'bold': True, 'align': 'right', 'top': 1})
             total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'align': 'right'})
-            total_value_red_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'font_color': 'red', 'top': 1, 'align': 'right'})
             
             worksheet.set_column('A:F', 15)
-            worksheet.set_column('G:G', 22, red_currency_format)
+            worksheet.set_column('G:G', 22, red_alert_format) # Highlighted column matching rules
             worksheet.set_column('H:H', 22, currency_format)
             worksheet.set_column('I:I', 35)
             
             last_row = len(output_df) + 1
             worksheet.write(last_row, 5, 'Total Adjustments Summary:', total_label_format)
-            worksheet.write_formula(last_row, 6, f'=SUM(G2:G{last_row})', total_value_red_format)
+            worksheet.write_formula(last_row, 6, f'=SUM(G2:G{last_row})', bold_red_alert_format)
             worksheet.write_formula(last_row, 7, f'=SUM(H2:H{last_row})', total_value_format)
             
-            # Bottom Invoice Summary Statement Panel
+            # Bottom Summary Block
             statement_start_row = last_row + 3
             worksheet.write(statement_start_row, 5, 'Payroll Summary Payout Statement', bold_format)
             
@@ -254,7 +264,7 @@ if uploaded_file is not None:
             worksheet.write_formula(statement_start_row + 3, 6, f'=H{last_row+1}', currency_format)
             
             worksheet.write(statement_start_row + 4, 5, 'Attendance Penalty Deductions (-):')
-            worksheet.write_formula(statement_start_row + 4, 6, f'=MAX(0, G{last_row+1} - ({approved_leaves + public_holidays}*32400*{per_second_rate:.8f}))', bold_red_currency_format)
+            worksheet.write_formula(statement_start_row + 4, 6, f'=MAX(0, G{last_row+1} - ({approved_leaves + public_holidays}*32400*{per_second_rate:.8f}))', bold_red_alert_format)
             
             worksheet.write(statement_start_row + 5, 5, 'Net Take-Home Salary (PKR):', total_label_format)
             worksheet.write_formula(statement_start_row + 5, 6, f'=(G{statement_start_row + 3}+G{statement_start_row + 4})-G{statement_start_row + 5}', bold_currency_format)
