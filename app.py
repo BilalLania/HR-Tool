@@ -73,6 +73,7 @@ if uploaded_file is not None:
         def calculate_metrics(row):
             day_type = row['Day_Type']
             punches = row['Punches']
+            work_date = row['Work_Date']
             
             if punches == 0:
                 if day_type == "Weekend":
@@ -96,8 +97,9 @@ if uploaded_file is not None:
                     return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
                 return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
-            # --- 🕗 The 8 PM Overtime Rule Engine ---
-            eight_pm_cutoff = datetime.combine(check_in_dt.date() + timedelta(days=1) if check_in_dt.hour >= 12 and check_out_dt.hour < 7 else check_in_dt.date(), time(20, 0, 0))
+            # --- 🕗 The Redesigned 8 PM Overtime Cutoff Fix ---
+            # Overtime should always start at 8:00 PM of the absolute calendar day the shift started on.
+            eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
             
             overtime_secs = 0.0
             if check_out_dt > eight_pm_cutoff:
@@ -216,10 +218,8 @@ if uploaded_file is not None:
             workbook  = writer.book
             worksheet = writer.sheets['Payroll Summary']
             
-            # Formatting configurations
             currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'align': 'right'})
             
-            # Explicit Red Font + Red Highlight Soft Background
             red_alert_format = workbook.add_format({
                 'num_format': '₨ #,##0.00',
                 'font_color': '#9C0006',
@@ -241,7 +241,7 @@ if uploaded_file is not None:
             total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'align': 'right'})
             
             worksheet.set_column('A:F', 15)
-            worksheet.set_column('G:G', 22, red_alert_format) # Highlighted column matching rules
+            worksheet.set_column('G:G', 22, red_alert_format)
             worksheet.set_column('H:H', 22, currency_format)
             worksheet.set_column('I:I', 35)
             
