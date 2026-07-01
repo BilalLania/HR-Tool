@@ -73,7 +73,6 @@ if uploaded_file is not None:
         def calculate_metrics(row):
             day_type = row['Day_Type']
             punches = row['Punches']
-            work_date = row['Work_Date']
             
             if punches == 0:
                 if day_type == "Weekend":
@@ -97,29 +96,32 @@ if uploaded_file is not None:
                     return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
                 return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
-            # --- 🕗 The Redesigned 8 PM Overtime Cutoff Fix ---
-            # Overtime should always start at 8:00 PM of the absolute calendar day the shift started on.
-            eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
+            # --- 🕗 Total Daily Duration & Shortage Engine ---
+            total_worked_secs = max(0.0, (check_out_dt - check_in_dt).total_seconds())
+            required_secs = 9 * 60 * 60
             
+            # Shortage is now evaluated globally including post-8PM hours as requested
+            shortage_secs = max(0.0, required_secs - total_worked_secs)
+            
+            # --- Overtime Engine ---
+            eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
             overtime_secs = 0.0
             if check_out_dt > eight_pm_cutoff:
                 overtime_secs = max(0.0, (check_out_dt - eight_pm_cutoff).total_seconds())
-                effective_checkout = eight_pm_cutoff
-            else:
-                effective_checkout = check_out_dt
-                
-            standard_worked_secs = max(0.0, (effective_checkout - check_in_dt).total_seconds())
-            required_secs = 9 * 60 * 60
-            shortage_secs = max(0.0, required_secs - standard_worked_secs)
             
             if day_type == "Weekend":
-                return "🎉 Weekend | 📋 Complete", (check_out_dt - check_in_dt).total_seconds(), 0.0, 0.0, False
+                return "🎉 Weekend | 📋 Complete", total_worked_secs, 0.0, 0.0, False
 
-            final_status = f"{time_status} | 📋 Complete"
+            # Dynamic Status labeling based on actual hour target completion
+            if shortage_secs > 0:
+                final_status = f"{time_status} | ⚠️ Shortage"
+            else:
+                final_status = f"{time_status} | 📋 Complete"
+                
             if overtime_secs > 0:
                 final_status += " + 🚀 Post-8PM OT"
                 
-            return final_status, (check_out_dt - check_in_dt).total_seconds(), shortage_secs, overtime_secs, False
+            return final_status, total_worked_secs, shortage_secs, overtime_secs, False
 
         res = summary.apply(calculate_metrics, axis=1)
         summary['Combined_Status'] = [r[0] for r in res]
