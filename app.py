@@ -5,9 +5,13 @@ import io
 
 st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout="wide")
 
+## Initialize permanent session memory for company public holidays so they don't erase on file change
+if 'company_public_holidays' not in st.session_state:
+    st.session_state['company_public_holidays'] = []
+
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
-st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and independent shift shortage windows.")
+st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and manage persistent holiday calendars.")
 st.write("---")
 
 ## ⚙️ Payroll Policy Settings
@@ -16,7 +20,6 @@ base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary (PKR
 working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=30, step=1)
 
 st.sidebar.write("---")
-st.sidebar.header("🏝️ Paid Off-Days Management")
 
 # Math calculations down to the exact second (9 hours per day rule)
 total_expected_hours = working_days_month * 9
@@ -48,11 +51,24 @@ if uploaded_file is not None:
         max_date = df['Work_Date'].max()
         all_detected_dates = pd.date_range(start=min_date, end=max_date).date
         
-        # Interactive Holiday Selector widget in the Sidebar
-        chosen_holidays = st.sidebar.multiselect(
-            "Select Official Holidays / Leaves:",
+        ## 🏢 TAB 1: Company Public Holidays (Stored Permanently in Session Memory)
+        st.sidebar.subheader("🏢 Company Public Holidays")
+        st.session_state['company_public_holidays'] = st.sidebar.multiselect(
+            "Select Fixed Public Holidays (Stays saved across uploads):",
             options=all_detected_dates,
-            format_func=lambda x: x.strftime('%b %d, %Y')
+            default=[d for d in st.session_state['company_public_holidays'] if d in all_detected_dates],
+            format_func=lambda x: x.strftime('%b %d, %Y'),
+            key="holiday_selector"
+        )
+        
+        ## 🏝️ TAB 2: Individual Approved Leaves (Refreshes per File Upload)
+        st.sidebar.write("---")
+        st.sidebar.subheader("🏝️ Individual Approved Leaves")
+        chosen_leaves = st.sidebar.multiselect(
+            f"Select Approved Leaves for {emp_name}:",
+            options=[d for d in all_detected_dates if d not in st.session_state['company_public_holidays']],
+            format_func=lambda x: x.strftime('%b %d, %Y'),
+            key=f"leaves_{emp_name}" # Unique widget key forces refresh on new file loading
         )
         
         # Aggregate Daily Punches
@@ -65,11 +81,13 @@ if uploaded_file is not None:
         summary.rename(columns={'index': 'Work_Date'}, inplace=True)
         summary['Punches'] = summary['Punches'].fillna(0).astype(int)
         
-        # Smart Dynamic Weekend Resolver
+        # Smart Dynamic Weekend & Holiday Resolver
         def evaluate_day_type(row):
             date_obj = row['Work_Date']
-            if date_obj in chosen_holidays:
-                return "Holiday/Leave"
+            if date_obj in st.session_state['company_public_holidays']:
+                return "Public Holiday"
+            if date_obj in chosen_leaves:
+                return "Approved Leave"
             if date_obj.weekday() == 6:
                 return "Weekend"
             elif date_obj.weekday() == 5 and row['Punches'] == 0:
@@ -84,8 +102,10 @@ if uploaded_file is not None:
             punches = row['Punches']
             
             if punches == 0:
-                if day_type == "Holiday/Leave":
-                    return "🏝️ Official Holiday / Paid Leave", 0.0, 0.0, 0.0, False
+                if day_type == "Public Holiday":
+                    return "🏢 Company Public Holiday", 0.0, 0.0, 0.0, False
+                elif day_type == "Approved Leave":
+                    return "🏝️ Approved Paid Leave", 0.0, 0.0, 0.0, False
                 elif day_type == "Weekend":
                     return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
                 else:
@@ -103,7 +123,7 @@ if uploaded_file is not None:
                 time_status = "✅ On Time"
                 
             if punches == 1 or check_in_dt == check_out_dt:
-                if day_type in ["Weekend", "Holiday/Leave"]:
+                if day_type in ["Weekend", "Public Holiday", "Approved Leave"]:
                     return f"🎉 {day_type} | 📋 Complete", 0.0, 0.0, 0.0, False
                 return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
@@ -111,7 +131,6 @@ if uploaded_file is not None:
             core_start = datetime.combine(check_in_dt.date(), time(11, 0, 0))
             core_end = datetime.combine(check_in_dt.date(), time(20, 0, 0))
             
-            # Find the actual work window done strictly inside 11am-8pm bounds
             effective_in = max(check_in_dt, core_start)
             effective_out = min(check_out_dt, core_end)
             
@@ -130,7 +149,7 @@ if uploaded_file is not None:
             
             total_worked_secs = max(0.0, (check_out_dt - check_in_dt).total_seconds())
             
-            if day_type in ["Weekend", "Holiday/Leave"]:
+            if day_type in ["Weekend", "Public Holiday", "Approved Leave"]:
                 return f"🎉 {day_type} | 📋 Complete", total_worked_secs, 0.0, 0.0, False
 
             if shortage_secs > 0:
