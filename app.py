@@ -7,13 +7,18 @@ st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout=
 
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
-st.markdown("Upload raw biometric logs to compute shifts, cross-midnight logs, and exact per-second salary adjustments.")
+st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and data-driven alternate Saturdays.")
 st.write("---")
 
 ## ⚙️ Payroll Policy Settings
 st.sidebar.header("⚙️ Payroll Configuration")
 base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary (PKR)", min_value=1.0, value=50000.0, step=1000.0)
 working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=30, step=1)
+
+st.sidebar.write("---")
+st.sidebar.header("🏝️ Paid Off-Days Adjustment")
+approved_leaves = st.sidebar.number_input("Approved Paid Leaves Taken", min_value=0, value=0, step=1)
+public_holidays = st.sidebar.number_input("Gazetted Public Holidays", min_value=0, value=0, step=1)
 
 # Math calculations down to the exact second (9 hours per day rule)
 total_seconds_per_month = working_days_month * 9 * 60 * 60
@@ -31,29 +36,59 @@ if uploaded_file is not None:
         df['Original_DateTime'] = pd.to_datetime(df['Date/Time'])
         emp_name = df['Name'].iloc[0] if 'Name' in df.columns else "Employee"
         
-        ## 🌙 Cross-Midnight / Night Shift Correction Logic
+        ## 🌙 Robust Night Shift Window (12-Hour Morning Grouping rule)
+        # Anything from 12:00 AM Midnight to 12:00 PM Noon belongs to the shift that started yesterday
         def get_adjusted_work_date(dt):
-            if 0 <= dt.hour < 6:
+            if 0 <= dt.hour < 12:
                 return (dt - timedelta(days=1)).date()
             return dt.date()
             
         df['Work_Date'] = df['Original_DateTime'].apply(get_adjusted_work_date)
+        
+        # Build the dynamic date list from the entire month
+        all_detected_dates = pd.date_range(start=df['Work_Date'].min(), end=df['Work_Date'].max()).date
         
         # Aggregate Daily Punches
         summary = df.groupby(['Work_Date']).agg(
             Check_In=('Original_DateTime', 'min'),
             Check_Out=('Original_DateTime', 'max'),
             Punches=('Original_DateTime', 'count')
-        ).reset_index()
+        ).reindex(all_detected_dates).reset_index()
         
-        summary['Total_Seconds'] = (summary['Check_Out'] - summary['Check_In']).dt.total_seconds()
+        summary.rename(columns={'index': 'Work_Date'}, inplace=True)
+        summary['Punches'] = summary['Punches'].fillna(0).astype(int)
+        
+        # Smart Dynamic Weekend Resolver
+        def evaluate_day_type(row):
+            date_obj = row['Work_Date']
+            # Sundays are always weekends
+            if date_obj.weekday() == 6:
+                return "Weekend"
+            # Saturdays are weekends ONLY if the employee did not log any punches that day
+            elif date_obj.weekday() == 5 and row['Punches'] == 0:
+                return "Weekend"
+            return "Working Day"
+            
+        summary['Day_Type'] = summary.apply(evaluate_day_type, axis=1)
         
         ## 🧠 Process Rules Engine
         def calculate_metrics(row):
-            check_in_time = row['Check_In'].time()
-            total_secs = row['Total_Seconds']
+            day_type = row['Day_Type']
+            punches = row['Punches']
             
-            # 1. Determine Late Status Independent of Punch Integrity
+            # If it's a structural weekend or a completely blank day off, wipe out work expectations
+            if punches == 0:
+                if day_type == "Weekend":
+                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0
+                else:
+                    # Absent Day (Working day with zero punches)
+                    return "❌ Absent / Unpaid Day", 0.0, 9 * 60 * 60, 0.0
+            
+            check_in_dt = row['Check_In']
+            check_out_dt = row['Check_Out']
+            check_in_time = check_in_dt.time()
+            
+            # Late arrival validation flags
             if check_in_time > time(12, 0):
                 time_status = "⚠️ Late"
             elif check_in_time > time(11, 0):
@@ -61,47 +96,79 @@ if uploaded_file is not None:
             else:
                 time_status = "✅ On Time"
                 
-            # 2. Check for missing punches
-            if row['Punches'] == 1:
-                final_status = f"{time_status} | ❌ Missing Punch Out"
-                shortage_secs = 9 * 60 * 60 # Treat single-punch days as a full deficit setup
-                actual_worked = 0.0
-            else:
-                final_status = f"{time_status} | 📋 Complete"
-                required_secs = 9 * 60 * 60
-                shortage_secs = max(0.0, required_secs - total_secs)
-                actual_worked = total_secs
+            # Single punch calculation handler
+            if punches == 1:
+                if day_type == "Weekend":
+                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0
+                return f"{time_status} | ❌ Missing Punch Out", 0.0, 9 * 60 * 60, 0.0
+
+            # --- 🕗 The 8 PM Overtime Rule Engine ---
+            # Generate the exact 8:00 PM cutoff target time for that work date
+            eight_pm_cutoff = datetime.combine(check_in_dt.date() + timedelta(days=1) if check_in_dt.hour >= 12 and check_out_dt.hour < 12 else check_in_dt.date(), time(20, 0, 0))
+            if check_out_dt.hour < 12 and check_in_dt.hour >= 12:
+                # If it spans nicely past midnight, correct the offset
+                eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
             
-            return final_status, actual_worked, shortage_secs
+            overtime_secs = 0.0
+            if check_out_dt > eight_pm_cutoff:
+                overtime_secs = max(0.0, (check_out_dt - eight_pm_cutoff).total_seconds())
+                effective_checkout = eight_pm_cutoff
+            else:
+                effective_checkout = check_out_dt
+                
+            # Standard duration logic cap
+            standard_worked_secs = max(0.0, (effective_checkout - check_in_dt).total_seconds())
+            required_secs = 9 * 60 * 60
+            shortage_secs = max(0.0, required_secs - standard_worked_secs)
+            
+            if day_type == "Weekend":
+                return "🎉 Weekend | 📋 Complete", (check_out_dt - check_in_dt).total_seconds(), 0.0, 0.0
+
+            final_status = f"{time_status} | 📋 Complete"
+            if overtime_secs > 0:
+                final_status += " + 🚀 Post-8PM OT"
+                
+            return final_status, (check_out_dt - check_in_dt).total_seconds(), shortage_secs, overtime_secs
 
         res = summary.apply(calculate_metrics, axis=1)
         summary['Combined_Status'] = [r[0] for r in res]
         summary['Seconds_Worked'] = [r[1] for r in res]
         summary['Shortage_Secs'] = [r[2] for r in res]
+        summary['Overtime_Secs'] = [r[3] for r in res]
         
+        # Apply Financial Valuations
         summary['Deduction'] = summary['Shortage_Secs'] * per_second_rate
+        summary['Overtime_Pay'] = summary['Overtime_Secs'] * (per_second_rate * 0.5) # Half-Rate Overtime Compensation
         
         ## 📊 Management Metrics Overview
         st.subheader(f"📈 Performance Analysis: {emp_name}")
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4)
         
         total_shortage_mins = summary['Shortage_Secs'].sum() / 60
+        total_ot_mins = summary['Overtime_Secs'].sum() / 60
         net_deductions = summary['Deduction'].sum()
+        net_ot_payout = summary['Overtime_Pay'].sum()
         
-        c1.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
-        c2.metric("Late Days Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]))
-        c3.metric("Missing Log Incidents", len(summary[summary['Combined_Status'].str.contains("❌ Missing Punch Out")]))
+        # Credit back approved leaves and holidays
+        leave_credit_pkr = (approved_leaves + public_holidays) * (9 * 60 * 60 * per_second_rate)
+        adjusted_deductions = max(0.0, net_deductions - leave_credit_pkr)
+        
+        c1.metric("Total Attendance Deficit", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
+        c2.metric("Post-8PM Overtime (Half-Pay)", f"{total_ot_mins:.1f} mins", f"+₨ {net_ot_payout:,.2f}")
+        c3.metric("Late Day Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]))
+        c4.metric("Leaves/Holidays Credited", f"{int(approved_leaves + public_holidays)} Days", f"+₨ {leave_credit_pkr:,.2f}")
         
         ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION
         st.write("---")
         st.subheader("💵 Monthly Payroll Payout Statement")
         
-        final_take_home = base_monthly_salary - net_deductions
+        final_take_home = base_monthly_salary - adjusted_deductions + net_ot_payout
         
-        sc1, sc2, sc3 = st.columns(3)
+        sc1, sc2, sc3, sc4 = st.columns(4)
         sc1.markdown(f"**Gross Base Salary:**\n### ₨ {base_monthly_salary:,.2f}")
-        sc2.markdown(f"**(-) Attendance Deductions:**\n### <span style='color:red;'>₨ {net_deductions:,.2f}</span>", unsafe_allow_html=True)
-        sc3.markdown(f"**💰 Net Disbursable Salary:**\n## ₨ {final_take_home:,.2f}")
+        sc2.markdown(f"**(+) Compensatory Overtime:**\n### <span style='color:green;'>₨ {net_ot_payout:,.2f}</span>", unsafe_allow_html=True)
+        sc3.markdown(f"**(-) Net Attendance Deductions:**\n### <span style='color:red;'>₨ {adjusted_deductions:,.2f}</span> <br><small style='color:gray;'>Leaves protected ₨ {leave_credit_pkr:,.2f}</small>", unsafe_allow_html=True)
+        sc4.markdown(f"**💰 Net Disbursable Salary:**\n## ₨ {final_take_home:,.2f}")
         
         st.write("---")
         
@@ -117,10 +184,11 @@ if uploaded_file is not None:
 
         with tab_ledger:
             master_display = pd.DataFrame({
-                "Work Date": summary['Work_Date'].apply(lambda x: x.strftime('%b %d, %Y')),
-                "Actual Check-In": summary['Check_In'].dt.strftime('%b %d, %I:%M:%S %p'),
-                "Actual Check-Out": summary['Check_Out'].dt.strftime('%b %d, %I:%M:%S %p'),
+                "Work Date": summary['Work_Date'].apply(lambda x: x.strftime('%b %d, %Y') if not pd.isnull(x) else ''),
+                "Actual Check-In": summary['Check_In'].apply(lambda x: x.strftime('%b %d, %I:%M:%S %p') if not pd.isnull(x) else 'N/A'),
+                "Actual Check-Out": summary['Check_Out'].apply(lambda x: x.strftime('%b %d, %I:%M:%S %p') if not pd.isnull(x) else 'N/A'),
                 "Total Duration": summary['Seconds_Worked'].apply(format_seconds),
+                "Post-8PM Overtime": summary['Overtime_Secs'].apply(format_seconds),
                 "Status Details": summary['Combined_Status']
             })
             st.dataframe(master_display, use_container_width=True, hide_index=True)
@@ -142,11 +210,13 @@ if uploaded_file is not None:
         
         output_df = pd.DataFrame({
             'Work Date': summary['Work_Date'].apply(lambda x: x.strftime('%Y-%m-%d')),
-            'Check In': summary['Check_In'].dt.strftime('%H:%M:%S'),
-            'Check Out': summary['Check_Out'].dt.strftime('%H:%M:%S'),
+            'Check In': summary['Check_In'].apply(lambda x: x.strftime('%H:%M:%S') if not pd.isnull(x) else 'N/A'),
+            'Check Out': summary['Check_Out'].apply(lambda x: x.strftime('%H:%M:%S') if not pd.isnull(x) else 'N/A'),
             'Total Worked': summary['Seconds_Worked'].apply(format_seconds),
-            'Shortage Total': summary['Shortage_Secs'].apply(format_seconds),
+            'Deficit Shortage': summary['Shortage_Secs'].apply(format_seconds),
+            'Post-8PM OT Duration': summary['Overtime_Secs'].apply(format_seconds),
             'Deductions (PKR)': summary['Deduction'],
+            'Overtime Pay (PKR)': summary['Overtime_Pay'],
             'Status Flags': summary['Combined_Status']
         })
         
@@ -164,26 +234,30 @@ if uploaded_file is not None:
             total_label_format = workbook.add_format({'bold': True, 'align': 'right', 'top': 1})
             total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'align': 'right'})
             
-            worksheet.set_column('A:E', 15)
-            worksheet.set_column('F:F', 22, currency_format)
-            worksheet.set_column('G:G', 32) # Expanded status text width
+            worksheet.set_column('A:F', 15)
+            worksheet.set_column('G:H', 22, currency_format)
+            worksheet.set_column('I:I', 35)
             
             last_row = len(output_df) + 1
-            worksheet.write(last_row, 4, 'Total Deductions:', total_label_format)
-            worksheet.write_formula(last_row, 5, f'=SUM(F2:F{last_row})', total_value_format)
+            worksheet.write(last_row, 5, 'Total Adjustments Summary:', total_label_format)
+            worksheet.write_formula(last_row, 6, f'=SUM(G2:G{last_row})', total_value_format)
+            worksheet.write_formula(last_row, 7, f'=SUM(H2:H{last_row})', total_value_format)
             
-            # Bottom billing summary
+            # Bottom Invoice Summary Statement Panel
             statement_start_row = last_row + 3
-            worksheet.write(statement_start_row, 4, 'Payroll Summary Payout Statement', bold_format)
+            worksheet.write(statement_start_row, 5, 'Payroll Summary Payout Statement', bold_format)
             
-            worksheet.write(statement_start_row + 1, 4, 'Gross Base Salary:')
-            worksheet.write(statement_start_row + 1, 5, base_monthly_salary, currency_format)
+            worksheet.write(statement_start_row + 1, 5, 'Gross Base Salary:')
+            worksheet.write(statement_start_row + 1, 6, base_monthly_salary, currency_format)
             
-            worksheet.write(statement_start_row + 2, 4, 'Total Deductions Penalty:')
-            worksheet.write_formula(statement_start_row + 2, 5, f'=F{last_row+1}', currency_format)
+            worksheet.write(statement_start_row + 2, 5, 'Compensatory Overtime Earned (+):')
+            worksheet.write_formula(statement_start_row + 2, 6, f'=H{last_row+1}', currency_format)
             
-            worksheet.write(statement_start_row + 3, 4, 'Net Take-Home Salary (PKR):', total_label_format)
-            worksheet.write_formula(statement_start_row + 3, 5, f'=F{statement_start_row + 2}-F{statement_start_row + 3}', bold_currency_format)
+            worksheet.write(statement_start_row + 3, 5, 'Attendance Penalty Deductions (-):')
+            worksheet.write_formula(statement_start_row + 3, 6, f'=MAX(0, G{last_row+1} - ({approved_leaves + public_holidays}*32400*{per_second_rate:.8f}))', currency_format)
+            
+            worksheet.write(statement_start_row + 4, 5, 'Net Take-Home Salary (PKR):', total_label_format)
+            worksheet.write_formula(statement_start_row + 4, 6, f'=(G{statement_start_row + 2}+G{statement_start_row + 3})-G{statement_start_row + 4}', bold_currency_format)
             
         excel_data = buffer.getvalue()
         
