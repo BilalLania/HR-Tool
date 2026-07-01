@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, time, timedelta
 
-st.set_page_config(page_title="HR Payroll & Attendance Dashboard", layout="wide")
+st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout="wide")
 
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
@@ -11,7 +11,7 @@ st.write("---")
 
 ## ⚙️ Payroll Policy Settings
 st.sidebar.header("⚙️ Payroll Configuration")
-base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary ($)", min_value=1.0, value=1500.0, step=100.0)
+base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary (PKR)", min_value=1.0, value=50000.0, step=1000.0)
 working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=22, step=1)
 
 # Math: 9 required hours per day = 540 minutes = 32,400 seconds
@@ -20,7 +20,7 @@ total_seconds_per_month = working_days_month * 9 * 60 * 60
 per_second_rate = base_monthly_salary / total_seconds_per_month
 per_minute_rate = per_second_rate * 60
 
-st.sidebar.info(f"💡 **Calculated Rates:**\n* ${per_minute_rate:.4f} / minute\n* ${per_second_rate:.6f} / second")
+st.sidebar.info(f"💡 **Calculated Rates (PKR):**\n* ₨ {per_minute_rate:.4f} / minute\n* ₨ {per_second_rate:.6f} / second")
 
 ## 📁 File Upload
 uploaded_file = st.file_uploader("Upload Employee Sheet (e.g., Aashir.xls)", type=["xls", "xlsx"])
@@ -32,7 +32,6 @@ if uploaded_file is not None:
         emp_name = df['Name'].iloc[0] if 'Name' in df.columns else "Employee"
         
         ## 🌙 Cross-Midnight / Night Shift Correction Logic
-        # If a punch happens between 12:00 AM and 6:00 AM, it belongs to the previous day's work session
         def get_adjusted_work_date(dt):
             if 0 <= dt.hour < 6:
                 return (dt - timedelta(days=1)).date()
@@ -80,7 +79,7 @@ if uploaded_file is not None:
         summary['Overtime_Secs'] = [r[2] for r in res]
         summary['Shortage_Secs'] = [r[3] for r in res]
         
-        # Calculate Financial Impacts strictly per second
+        # Calculate Financial Impacts strictly per second in PKR
         summary['Deduction'] = summary['Shortage_Secs'] * per_second_rate
         summary['Overtime_Pay'] = summary['Overtime_Secs'] * per_second_rate 
         
@@ -93,8 +92,8 @@ if uploaded_file is not None:
         net_deductions = summary['Deduction'].sum()
         net_overtime_pay = summary['Overtime_Pay'].sum()
         
-        c1.metric("Total Overtime Logged", f"{total_overtime_mins:.1f} mins", f"+${net_overtime_pay:.2f}")
-        c2.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-${net_deductions:.2f}", delta_color="inverse")
+        c1.metric("Total Overtime Logged", f"{total_overtime_mins:.1f} mins", f"+₨ {net_overtime_pay:,.2f}")
+        c2.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
         c3.metric("Late Days", len(summary[summary['Status'] == "⚠️ Late"]))
         c4.metric("Incomplete Logs", len(summary[summary['Status'] == "❌ Missing Punch Out"]))
         
@@ -103,7 +102,6 @@ if uploaded_file is not None:
         ## 🗂️ View Tabbing
         tab_ledger, tab_overtime, tab_deductions = st.tabs(["📋 Master Ledger", "🚀 Overtime Tracker", "💸 Deductions List"])
         
-        # Helper formatting function
         def format_seconds(secs):
             if secs <= 0: return "N/A"
             h = int(secs // 3600)
@@ -127,7 +125,7 @@ if uploaded_file is not None:
                 st.dataframe(pd.DataFrame({
                     "Work Date": ot_df['Work_Date'].apply(lambda x: x.strftime('%b %d, %Y')),
                     "Overtime Duration": ot_df['Overtime_Secs'].apply(format_seconds),
-                    "Accrued Earnings": ot_df['Overtime_Pay'].apply(lambda x: f"${x:.2f}")
+                    "Accrued Earnings": ot_df['Overtime_Pay'].apply(lambda x: f"₨ {x:,.2f}")
                 }), use_container_width=True, hide_index=True)
             else:
                 st.success("No overtime recorded for this period.")
@@ -138,7 +136,7 @@ if uploaded_file is not None:
                 st.dataframe(pd.DataFrame({
                     "Work Date": deduct_df['Work_Date'].apply(lambda x: x.strftime('%b %d, %Y')),
                     "Deficit Duration": deduct_df['Shortage_Secs'].apply(format_seconds),
-                    "Salary Deduction Penalty": deduct_df['Deduction'].apply(lambda x: f"-${x:.2f}")
+                    "Salary Deduction Penalty": deduct_df['Deduction'].apply(lambda x: f"-₨ {x:,.2f}")
                 }), use_container_width=True, hide_index=True)
             else:
                 st.success("Perfect attendance! Zero deductions calculated.")
@@ -162,7 +160,7 @@ if uploaded_file is not None:
         st.download_button(
             label=f"📥 Download Precision Payroll Sheet for {emp_name}",
             data=csv_data,
-            file_name=f"Precision_Payroll_{emp_name}_{datetime.now().strftime('%Y%m%d')}.csv",
+            file_name=f"Precision_Payroll_PKR_{emp_name}_{datetime.now().strftime('%Y%m%d')}.csv",
             mime="text/csv"
         )
                 
