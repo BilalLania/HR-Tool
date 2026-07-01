@@ -7,7 +7,7 @@ st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout=
 
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
-st.markdown("Upload raw biometric logs to compute shifts, overtime, cross-midnight logs, and exact per-second salary adjustments.")
+st.markdown("Upload raw biometric logs to compute shifts, cross-midnight logs, and exact per-second salary adjustments.")
 st.write("---")
 
 ## ⚙️ Payroll Policy Settings
@@ -61,57 +61,49 @@ if uploaded_file is not None:
                 status = "✅ On Time"
                 
             if row['Punches'] == 1:
-                return "❌ Missing Punch Out", 0, 0, 0
+                return "❌ Missing Punch Out", 0, 0
             
             required_secs = 9 * 60 * 60
-            overtime_secs = max(0.0, total_secs - required_secs)
             shortage_secs = max(0.0, required_secs - total_secs)
             
-            return status, total_secs, overtime_secs, shortage_secs
+            return status, total_secs, shortage_secs
 
         res = summary.apply(calculate_metrics, axis=1)
         summary['Status'] = [r[0] for r in res]
         summary['Seconds_Worked'] = [r[1] for r in res]
-        summary['Overtime_Secs'] = [r[2] for r in res]
-        summary['Shortage_Secs'] = [r[3] for r in res]
+        summary['Shortage_Secs'] = [r[2] for r in res]
         
         summary['Deduction'] = summary['Shortage_Secs'] * per_second_rate
-        summary['Overtime_Pay'] = summary['Overtime_Secs'] * per_second_rate 
         
         ## 📊 Management Metrics Overview
         st.subheader(f"📈 Performance Analysis: {emp_name}")
-        c1, c2, c3, c4 = st.columns(4)
+        c1, c2, c3 = st.columns(3)
         
-        total_overtime_mins = summary['Overtime_Secs'].sum() / 60
         total_shortage_mins = summary['Shortage_Secs'].sum() / 60
         net_deductions = summary['Deduction'].sum()
-        net_overtime_pay = summary['Overtime_Pay'].sum()
         
-        c1.metric("Total Overtime Logged", f"{total_overtime_mins:.1f} mins", f"+₨ {net_overtime_pay:,.2f}")
-        c2.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
-        c3.metric("Late Days", len(summary[summary['Status'] == "⚠️ Late"]))
-        c4.metric("Incomplete Logs", len(summary[summary['Status'] == "❌ Missing Punch Out"]))
+        c1.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
+        c2.metric("Late Days", len(summary[summary['Status'] == "⚠️ Late"]))
+        c3.metric("Incomplete Logs", len(summary[summary['Status'] == "❌ Missing Punch Out"]))
         
-        ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION (New Feature)
+        ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION
         st.write("---")
         st.subheader("💵 Monthly Payroll Payout Statement")
         
-        # Calculate final payout breakdown
-        final_take_home = base_monthly_salary + net_overtime_pay - net_deductions
+        final_take_home = base_monthly_salary - net_deductions
         
-        sc1, sc2, sc3, sc4 = st.columns(4)
+        sc1, sc2, sc3 = st.columns(3)
         sc1.markdown(f"**Gross Base Salary:**\n### ₨ {base_monthly_salary:,.2f}")
-        sc2.markdown(f"**(+) Overtime Earned:**\n### <span style='color:green;'>₨ {net_overtime_pay:,.2f}</span>", unsafe_allow_html=True)
-        sc3.markdown(f"**(-) Attendance Deductions:**\n### <span style='color:red;'>₨ {net_deductions:,.2f}</span>", unsafe_allow_html=True)
-        sc4.markdown(f"**💰 Net Disbursable Salary:**\n## ₨ {final_take_home:,.2f}")
+        sc2.markdown(f"**(-) Attendance Deductions:**\n### <span style='color:red;'>₨ {net_deductions:,.2f}</span>", unsafe_allow_html=True)
+        sc3.markdown(f"**💰 Net Disbursable Salary:**\n## ₨ {final_take_home:,.2f}")
         
         st.write("---")
         
         ## 🗂️ View Tabbing
-        tab_ledger, tab_overtime, tab_deductions = st.tabs(["📋 Master Ledger", "🚀 Overtime Tracker", "💸 Deductions List"])
+        tab_ledger, tab_deductions = st.tabs(["📋 Master Ledger", "💸 Deductions List"])
         
         def format_seconds(secs):
-            if secs <= 0: return "N/A"
+            if secs <= 0: return "00:00:00"
             h = int(secs // 3600)
             m = int((secs % 3600) // 60)
             s = int(secs % 60)
@@ -127,17 +119,6 @@ if uploaded_file is not None:
             })
             st.dataframe(master_display, use_container_width=True, hide_index=True)
             
-        with tab_overtime:
-            ot_df = summary[summary['Overtime_Secs'] > 0]
-            if not ot_df.empty:
-                st.dataframe(pd.DataFrame({
-                    "Work Date": ot_df['Work_Date'].apply(lambda x: x.strftime('%b %d, %Y')),
-                    "Overtime Duration": ot_df['Overtime_Secs'].apply(format_seconds),
-                    "Accrued Earnings": ot_df['Overtime_Pay'].apply(lambda x: f"₨ {x:,.2f}")
-                }), use_container_width=True, hide_index=True)
-            else:
-                st.success("No overtime recorded for this period.")
-                
         with tab_deductions:
             deduct_df = summary[summary['Shortage_Secs'] > 0]
             if not deduct_df.empty:
@@ -158,9 +139,7 @@ if uploaded_file is not None:
             'Check In': summary['Check_In'].dt.strftime('%H:%M:%S'),
             'Check Out': summary['Check_Out'].dt.strftime('%H:%M:%S'),
             'Total Worked': summary['Seconds_Worked'].apply(format_seconds),
-            'Overtime Total': summary['Overtime_Secs'].apply(format_seconds),
             'Shortage Total': summary['Shortage_Secs'].apply(format_seconds),
-            'Overtime Pay (PKR)': summary['Overtime_Pay'],
             'Deductions (PKR)': summary['Deduction'],
             'Status': summary['Status']
         })
@@ -176,14 +155,13 @@ if uploaded_file is not None:
             total_label_format = workbook.add_format({'bold': True, 'align': 'right', 'top': 1, 'bottom': 6})
             total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'bottom': 6, 'align': 'right'})
             
-            worksheet.set_column('A:F', 15)
-            worksheet.set_column('G:H', 22, currency_format)
-            worksheet.set_column('I:I', 18)
+            worksheet.set_column('A:E', 15)
+            worksheet.set_column('F:F', 22, currency_format)
+            worksheet.set_column('G:G', 18)
             
             last_row = len(output_df) + 1
-            worksheet.write(last_row, 5, 'Total Adjustments:', total_label_format)
-            worksheet.write_formula(last_row, 6, f'=SUM(G2:G{last_row})', total_value_format)
-            worksheet.write_formula(last_row, 7, f'=SUM(H2:H{last_row})', total_value_format)
+            worksheet.write(last_row, 4, 'Total Deductions:', total_label_format)
+            worksheet.write_formula(last_row, 5, f'=SUM(F2:F{last_row})', total_value_format)
             
         excel_data = buffer.getvalue()
         
