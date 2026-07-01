@@ -53,23 +53,29 @@ if uploaded_file is not None:
             check_in_time = row['Check_In'].time()
             total_secs = row['Total_Seconds']
             
+            # 1. Determine Late Status Independent of Punch Integrity
             if check_in_time > time(12, 0):
-                status = "⚠️ Late"
+                time_status = "⚠️ Late"
             elif check_in_time > time(11, 0):
-                status = "⏱️ Grace Period"
+                time_status = "⏱️ Grace Period"
             else:
-                status = "✅ On Time"
+                time_status = "✅ On Time"
                 
+            # 2. Check for missing punches
             if row['Punches'] == 1:
-                return "❌ Missing Punch Out", 0, 0
+                final_status = f"{time_status} | ❌ Missing Punch Out"
+                shortage_secs = 9 * 60 * 60 # Treat single-punch days as a full deficit setup
+                actual_worked = 0.0
+            else:
+                final_status = f"{time_status} | 📋 Complete"
+                required_secs = 9 * 60 * 60
+                shortage_secs = max(0.0, required_secs - total_secs)
+                actual_worked = total_secs
             
-            required_secs = 9 * 60 * 60
-            shortage_secs = max(0.0, required_secs - total_secs)
-            
-            return status, total_secs, shortage_secs
+            return final_status, actual_worked, shortage_secs
 
         res = summary.apply(calculate_metrics, axis=1)
-        summary['Status'] = [r[0] for r in res]
+        summary['Combined_Status'] = [r[0] for r in res]
         summary['Seconds_Worked'] = [r[1] for r in res]
         summary['Shortage_Secs'] = [r[2] for r in res]
         
@@ -83,8 +89,8 @@ if uploaded_file is not None:
         net_deductions = summary['Deduction'].sum()
         
         c1.metric("Total Deficit Logged", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
-        c2.metric("Late Days", len(summary[summary['Status'] == "⚠️ Late"]))
-        c3.metric("Incomplete Logs", len(summary[summary['Status'] == "❌ Missing Punch Out"]))
+        c2.metric("Late Days Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]))
+        c3.metric("Missing Log Incidents", len(summary[summary['Combined_Status'].str.contains("❌ Missing Punch Out")]))
         
         ## 💵 FINAL SALARY PAYOUT STATEMENT SECTION
         st.write("---")
@@ -115,7 +121,7 @@ if uploaded_file is not None:
                 "Actual Check-In": summary['Check_In'].dt.strftime('%b %d, %I:%M:%S %p'),
                 "Actual Check-Out": summary['Check_Out'].dt.strftime('%b %d, %I:%M:%S %p'),
                 "Total Duration": summary['Seconds_Worked'].apply(format_seconds),
-                "Status": summary['Status']
+                "Status Details": summary['Combined_Status']
             })
             st.dataframe(master_display, use_container_width=True, hide_index=True)
             
@@ -141,7 +147,7 @@ if uploaded_file is not None:
             'Total Worked': summary['Seconds_Worked'].apply(format_seconds),
             'Shortage Total': summary['Shortage_Secs'].apply(format_seconds),
             'Deductions (PKR)': summary['Deduction'],
-            'Status': summary['Status']
+            'Status Flags': summary['Combined_Status']
         })
         
         buffer = io.BytesIO()
@@ -151,7 +157,6 @@ if uploaded_file is not None:
             workbook  = writer.book
             worksheet = writer.sheets['Payroll Summary']
             
-            # Text formatting
             currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'align': 'right'})
             bold_format = workbook.add_format({'bold': True})
             bold_currency_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'align': 'right'})
@@ -161,22 +166,21 @@ if uploaded_file is not None:
             
             worksheet.set_column('A:E', 15)
             worksheet.set_column('F:F', 22, currency_format)
-            worksheet.set_column('G:G', 18)
+            worksheet.set_column('G:G', 32) # Expanded status text width
             
-            # Add dynamic SUM row below data ledger
-            data_end_row = len(output_df) + 1
-            worksheet.write(data_end_row, 4, 'Total Deductions:', total_label_format)
-            worksheet.write_formula(data_end_row, 5, f'=SUM(F2:F{data_end_row})', total_value_format)
+            last_row = len(output_df) + 1
+            worksheet.write(last_row, 4, 'Total Deductions:', total_label_format)
+            worksheet.write_formula(last_row, 5, f'=SUM(F2:F{last_row})', total_value_format)
             
-            # Create a separate block section at the bottom for final take-home breakdown
-            statement_start_row = data_end_row + 3
+            # Bottom billing summary
+            statement_start_row = last_row + 3
             worksheet.write(statement_start_row, 4, 'Payroll Summary Payout Statement', bold_format)
             
             worksheet.write(statement_start_row + 1, 4, 'Gross Base Salary:')
             worksheet.write(statement_start_row + 1, 5, base_monthly_salary, currency_format)
             
             worksheet.write(statement_start_row + 2, 4, 'Total Deductions Penalty:')
-            worksheet.write_formula(statement_start_row + 2, 5, f'=F{data_end_row+1}', currency_format)
+            worksheet.write_formula(statement_start_row + 2, 5, f'=F{last_row+1}', currency_format)
             
             worksheet.write(statement_start_row + 3, 4, 'Net Take-Home Salary (PKR):', total_label_format)
             worksheet.write_formula(statement_start_row + 3, 5, f'=F{statement_start_row + 2}-F{statement_start_row + 3}', bold_currency_format)
