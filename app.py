@@ -13,9 +13,9 @@ st.write("---")
 ## ⚙️ Payroll Policy Settings
 st.sidebar.header("⚙️ Payroll Configuration")
 base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary (PKR)", min_value=1.0, value=50000.0, step=1000.0)
-working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=22, step=1)
+working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=30, step=1)
 
-# Math calculations down to the exact second
+# Math calculations down to the exact second (9 hours per day rule)
 total_seconds_per_month = working_days_month * 9 * 60 * 60
 per_second_rate = base_monthly_salary / total_seconds_per_month
 per_minute_rate = per_second_rate * 60
@@ -151,24 +151,42 @@ if uploaded_file is not None:
             workbook  = writer.book
             worksheet = writer.sheets['Payroll Summary']
             
+            # Text formatting
             currency_format = workbook.add_format({'num_format': '₨ #,##0.00', 'align': 'right'})
-            total_label_format = workbook.add_format({'bold': True, 'align': 'right', 'top': 1, 'bottom': 6})
-            total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'bottom': 6, 'align': 'right'})
+            bold_format = workbook.add_format({'bold': True})
+            bold_currency_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'align': 'right'})
+            
+            total_label_format = workbook.add_format({'bold': True, 'align': 'right', 'top': 1})
+            total_value_format = workbook.add_format({'bold': True, 'num_format': '₨ #,##0.00', 'top': 1, 'align': 'right'})
             
             worksheet.set_column('A:E', 15)
             worksheet.set_column('F:F', 22, currency_format)
             worksheet.set_column('G:G', 18)
             
-            last_row = len(output_df) + 1
-            worksheet.write(last_row, 4, 'Total Deductions:', total_label_format)
-            worksheet.write_formula(last_row, 5, f'=SUM(F2:F{last_row})', total_value_format)
+            # Add dynamic SUM row below data ledger
+            data_end_row = len(output_df) + 1
+            worksheet.write(data_end_row, 4, 'Total Deductions:', total_label_format)
+            worksheet.write_formula(data_end_row, 5, f'=SUM(F2:F{data_end_row})', total_value_format)
+            
+            # Create a separate block section at the bottom for final take-home breakdown
+            statement_start_row = data_end_row + 3
+            worksheet.write(statement_start_row, 4, 'Payroll Summary Payout Statement', bold_format)
+            
+            worksheet.write(statement_start_row + 1, 4, 'Gross Base Salary:')
+            worksheet.write(statement_start_row + 1, 5, base_monthly_salary, currency_format)
+            
+            worksheet.write(statement_start_row + 2, 4, 'Total Deductions Penalty:')
+            worksheet.write_formula(statement_start_row + 2, 5, f'=F{data_end_row+1}', currency_format)
+            
+            worksheet.write(statement_start_row + 3, 4, 'Net Take-Home Salary (PKR):', total_label_format)
+            worksheet.write_formula(statement_start_row + 3, 5, f'=F{statement_start_row + 2}-F{statement_start_row + 3}', bold_currency_format)
             
         excel_data = buffer.getvalue()
         
         st.download_button(
             label=f"📥 Download Structured Excel Sheet for {emp_name}",
             data=excel_data,
-            file_name=f"Clean_Payroll_Record_{emp_name}_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            file_name=f"Precision_Payroll_Final_{emp_name}_{datetime.now().strftime('%Y%m%d')}.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
                 
