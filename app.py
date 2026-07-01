@@ -68,7 +68,7 @@ if uploaded_file is not None:
             f"Select Approved Leaves for {emp_name}:",
             options=[d for d in all_detected_dates if d not in st.session_state['company_public_holidays']],
             format_func=lambda x: x.strftime('%b %d, %Y'),
-            key=f"leaves_{emp_name}" # Unique widget key forces refresh on new file loading
+            key=f"leaves_{emp_name}"
         )
         
         # Aggregate Daily Punches
@@ -115,10 +115,12 @@ if uploaded_file is not None:
             check_out_dt = row['Check_Out']
             check_in_time = check_in_dt.time()
             
+            is_grace_period = False
             if check_in_time > time(12, 0):
                 time_status = "⚠️ Late"
             elif check_in_time > time(11, 0):
                 time_status = "⏱️ Grace Period"
+                is_grace_period = True
             else:
                 time_status = "✅ On Time"
                 
@@ -140,7 +142,12 @@ if uploaded_file is not None:
                 core_worked_secs = 0.0
                 
             required_secs = 9 * 60 * 60
-            shortage_secs = max(0.0, required_secs - core_worked_secs)
+            
+            # POLICY UPDATE: If arrived during grace period, waive the shortage penalty clean!
+            if is_grace_period:
+                shortage_secs = 0.0
+            else:
+                shortage_secs = max(0.0, required_secs - core_worked_secs)
             
             # --- 🚀 Step 2: Overtime Track (Seconds past 8:00 PM Cutoff) ---
             overtime_secs = 0.0
