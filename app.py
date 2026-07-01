@@ -7,7 +7,7 @@ st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout=
 
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
-st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and handle official holidays dynamically.")
+st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and independent shift shortage windows.")
 st.write("---")
 
 ## ⚙️ Payroll Policy Settings
@@ -107,16 +107,28 @@ if uploaded_file is not None:
                     return f"🎉 {day_type} | 📋 Complete", 0.0, 0.0, 0.0, False
                 return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
-            # --- 🕗 Total Daily Duration & Shortage Engine ---
-            total_worked_secs = max(0.0, (check_out_dt - check_in_dt).total_seconds())
-            required_secs = 9 * 60 * 60
-            shortage_secs = max(0.0, required_secs - total_worked_secs)
+            # --- 🔲 Step 1: Core Shift Track (Bounded between 11:00 AM and 8:00 PM) ---
+            core_start = datetime.combine(check_in_dt.date(), time(11, 0, 0))
+            core_end = datetime.combine(check_in_dt.date(), time(20, 0, 0))
             
-            # --- Overtime Engine ---
-            eight_pm_cutoff = datetime.combine(check_in_dt.date(), time(20, 0, 0))
+            # Find the actual work window done strictly inside 11am-8pm bounds
+            effective_in = max(check_in_dt, core_start)
+            effective_out = min(check_out_dt, core_end)
+            
+            if effective_out > effective_in:
+                core_worked_secs = (effective_out - effective_in).total_seconds()
+            else:
+                core_worked_secs = 0.0
+                
+            required_secs = 9 * 60 * 60
+            shortage_secs = max(0.0, required_secs - core_worked_secs)
+            
+            # --- 🚀 Step 2: Overtime Track (Seconds past 8:00 PM Cutoff) ---
             overtime_secs = 0.0
-            if check_out_dt > eight_pm_cutoff:
-                overtime_secs = max(0.0, (check_out_dt - eight_pm_cutoff).total_seconds())
+            if check_out_dt > core_end:
+                overtime_secs = max(0.0, (check_out_dt - core_end).total_seconds())
+            
+            total_worked_secs = max(0.0, (check_out_dt - check_in_dt).total_seconds())
             
             if day_type in ["Weekend", "Holiday/Leave"]:
                 return f"🎉 {day_type} | 📋 Complete", total_worked_secs, 0.0, 0.0, False
