@@ -7,7 +7,7 @@ st.set_page_config(page_title="HR Payroll & Attendance Dashboard (PKR)", layout=
 
 ## 🏢 Header
 st.title("💼 HR Attendance & Payroll Processing Hub")
-st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and data-driven alternate Saturdays.")
+st.markdown("Upload raw biometric logs to compute shifts, lates, 8 PM partial overtime, and handle official holidays dynamically.")
 st.write("---")
 
 ## ⚙️ Payroll Policy Settings
@@ -16,9 +16,7 @@ base_monthly_salary = st.sidebar.number_input("Base Employee Monthly Salary (PKR
 working_days_month = st.sidebar.number_input("Standard Working Days/Month", min_value=1, value=30, step=1)
 
 st.sidebar.write("---")
-st.sidebar.header("🏝️ Paid Off-Days Adjustment")
-approved_leaves = st.sidebar.number_input("Approved Paid Leaves Taken", min_value=0, value=0, step=1)
-public_holidays = st.sidebar.number_input("Gazetted Public Holidays", min_value=0, value=0, step=1)
+st.sidebar.header("🏝️ Paid Off-Days Management")
 
 # Math calculations down to the exact second (9 hours per day rule)
 total_expected_hours = working_days_month * 9
@@ -46,7 +44,16 @@ if uploaded_file is not None:
         df['Work_Date'] = df['Original_DateTime'].apply(get_adjusted_work_date)
         
         # Build the dynamic date list from the entire month
-        all_detected_dates = pd.date_range(start=df['Work_Date'].min(), end=df['Work_Date'].max()).date
+        min_date = df['Work_Date'].min()
+        max_date = df['Work_Date'].max()
+        all_detected_dates = pd.date_range(start=min_date, end=max_date).date
+        
+        # Interactive Holiday Selector widget in the Sidebar
+        chosen_holidays = st.sidebar.multiselect(
+            "Select Official Holidays / Leaves:",
+            options=all_detected_dates,
+            format_func=lambda x: x.strftime('%b %d, %Y')
+        )
         
         # Aggregate Daily Punches
         summary = df.groupby(['Work_Date']).agg(
@@ -61,6 +68,8 @@ if uploaded_file is not None:
         # Smart Dynamic Weekend Resolver
         def evaluate_day_type(row):
             date_obj = row['Work_Date']
+            if date_obj in chosen_holidays:
+                return "Holiday/Leave"
             if date_obj.weekday() == 6:
                 return "Weekend"
             elif date_obj.weekday() == 5 and row['Punches'] == 0:
@@ -75,7 +84,9 @@ if uploaded_file is not None:
             punches = row['Punches']
             
             if punches == 0:
-                if day_type == "Weekend":
+                if day_type == "Holiday/Leave":
+                    return "🏝️ Official Holiday / Paid Leave", 0.0, 0.0, 0.0, False
+                elif day_type == "Weekend":
                     return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
                 else:
                     return "❌ Absent / Unpaid Day", 0.0, 9 * 60 * 60, 0.0, False
@@ -92,15 +103,13 @@ if uploaded_file is not None:
                 time_status = "✅ On Time"
                 
             if punches == 1 or check_in_dt == check_out_dt:
-                if day_type == "Weekend":
-                    return "🎉 Weekend | 📋 Complete", 0.0, 0.0, 0.0, False
+                if day_type in ["Weekend", "Holiday/Leave"]:
+                    return f"🎉 {day_type} | 📋 Complete", 0.0, 0.0, 0.0, False
                 return f"{time_status} | ❌ Missing Punch Out", 0.0, 0.0, 0.0, True
 
             # --- 🕗 Total Daily Duration & Shortage Engine ---
             total_worked_secs = max(0.0, (check_out_dt - check_in_dt).total_seconds())
             required_secs = 9 * 60 * 60
-            
-            # Shortage is now evaluated globally including post-8PM hours as requested
             shortage_secs = max(0.0, required_secs - total_worked_secs)
             
             # --- Overtime Engine ---
@@ -109,10 +118,9 @@ if uploaded_file is not None:
             if check_out_dt > eight_pm_cutoff:
                 overtime_secs = max(0.0, (check_out_dt - eight_pm_cutoff).total_seconds())
             
-            if day_type == "Weekend":
-                return "🎉 Weekend | 📋 Complete", total_worked_secs, 0.0, 0.0, False
+            if day_type in ["Weekend", "Holiday/Leave"]:
+                return f"🎉 {day_type} | 📋 Complete", total_worked_secs, 0.0, 0.0, False
 
-            # Dynamic Status labeling based on actual hour target completion
             if shortage_secs > 0:
                 final_status = f"{time_status} | ⚠️ Shortage"
             else:
@@ -143,9 +151,6 @@ if uploaded_file is not None:
         net_ot_payout = summary['Overtime_Pay'].sum()
         missing_out_count = int(summary['Is_Missing_Out'].sum())
         
-        leave_credit_pkr = (approved_leaves + public_holidays) * (9 * 60 * 60 * per_second_rate)
-        adjusted_deductions = max(0.0, net_deductions - leave_credit_pkr)
-        
         c1.metric("Total Attendance Minutes", f"{total_shortage_mins:.1f} mins", f"-₨ {net_deductions:,.2f}", delta_color="inverse")
         c2.metric("Post-8PM Overtime (Half-Pay)", f"{total_ot_mins:.1f} mins", f"+₨ {net_ot_payout:,.2f}")
         c3.metric("Late Day Flags", len(summary[summary['Combined_Status'].str.contains("⚠️ Late")]), "Arrival Alerts")
@@ -155,12 +160,12 @@ if uploaded_file is not None:
         st.write("---")
         st.subheader("💵 Monthly Payroll Payout Statement")
         
-        final_take_home = base_monthly_salary - adjusted_deductions + net_ot_payout
+        final_take_home = base_monthly_salary - net_deductions + net_ot_payout
         
         sc1, sc2, sc3, sc4 = st.columns(4)
         sc1.markdown(f"**Gross Base Salary:**\n### ₨ {base_monthly_salary:,.2f}")
         sc2.markdown(f"**(+) Compensatory Overtime:**\n### <span style='color:green;'>₨ {net_ot_payout:,.2f}</span>", unsafe_allow_html=True)
-        sc3.markdown(f"**(-) Net Attendance Deductions:**\n### <span style='color:red;'>₨ {adjusted_deductions:,.2f}</span>", unsafe_allow_html=True)
+        sc3.markdown(f"**(-) Net Attendance Deductions:**\n### <span style='color:red;'>₨ {net_deductions:,.2f}</span>", unsafe_allow_html=True)
         sc4.markdown(f"**💰 Net Disbursable Salary:**\n## ₨ {final_take_home:,.2f}")
         
         st.write("---")
@@ -266,7 +271,7 @@ if uploaded_file is not None:
             worksheet.write_formula(statement_start_row + 3, 6, f'=H{last_row+1}', currency_format)
             
             worksheet.write(statement_start_row + 4, 5, 'Attendance Penalty Deductions (-):')
-            worksheet.write_formula(statement_start_row + 4, 6, f'=MAX(0, G{last_row+1} - ({approved_leaves + public_holidays}*32400*{per_second_rate:.8f}))', bold_red_alert_format)
+            worksheet.write_formula(statement_start_row + 4, 6, f'=G{last_row+1}', bold_red_alert_format)
             
             worksheet.write(statement_start_row + 5, 5, 'Net Take-Home Salary (PKR):', total_label_format)
             worksheet.write_formula(statement_start_row + 5, 6, f'=(G{statement_start_row + 3}+G{statement_start_row + 4})-G{statement_start_row + 5}', bold_currency_format)
